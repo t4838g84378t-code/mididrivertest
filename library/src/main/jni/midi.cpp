@@ -40,6 +40,10 @@
 
 #include "org_billthefarmer_mididriver_MidiDriver.h"
 #include "midi.h"
+#include "wav_writer.h"
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define LOG_TAG "MidiDriver"
 
@@ -325,6 +329,134 @@ Java_org_billthefarmer_mididriver_MidiDriver_write(JNIEnv *env,
     env->ReleaseByteArrayElements(byteArray, (jbyte *) bytes, 0);
 
     return result;
+}
+
+// -----------------------------------------------------------------------------
+// WAV Export logic
+// -----------------------------------------------------------------------------
+
+typedef struct {
+    FILE *fp;
+    int size;
+} EAS_FILE_HANDLE_STD;
+
+static int std_readAt(void *handle, void *buf, int offset, int size) {
+    EAS_FILE_HANDLE_STD *pHandle = (EAS_FILE_HANDLE_STD *) handle;
+    fseek(pHandle->fp, offset, SEEK_SET);
+    return fread(buf, 1, size, pHandle->fp);
+}
+
+static int std_size(void *handle) {
+    EAS_FILE_HANDLE_STD *pHandle = (EAS_FILE_HANDLE_STD *) handle;
+    return pHandle->size;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_org_billthefarmer_mididriver_MidiDriver_nativeExportWav(JNIEnv *env, jobject thiz, jstring jMidiPath, jint fd) {
+    const char *midiPath = env->GetStringUTFChars(jMidiPath, nullptr);
+
+    FILE* fpIn = fopen(midiPath, "rb");
+    if (!fpIn) {
+        LOG_E(LOG_TAG, "Failed to open input MIDI file");
+        env->ReleaseStringUTFChars(jMidiPath, midiPath);
+        return;
+    }
+    fseek(fpIn, 0, SEEK_END);
+    int fileSize = ftell(fpIn);
+    fseek(fpIn, 0, SEEK_SET);
+
+    EAS_FILE_HANDLE_STD fileHandle = { fpIn, fileSize };
+    EAS_FILE easFile;
+    easFile.handle = &fileHandle;
+    easFile.readAt = std_readAt;
+    easFile.size = std_size;
+
+    FILE* fpOut = fdopen(fd, "wb");
+    if (!fpOut) {
+        LOG_E(LOG_TAG, "Failed to fdopen output WAV file");
+        fclose(fpIn);
+        env->ReleaseStringUTFChars(jMidiPath, midiPath);
+        return;
+    }
+
+    // Write empty WAV header initially
+    writeWavHeader(fpOut, 0);
+
+    // Initialize a new EAS instance just for exporting so it doesn't collide with live playback
+    EAS_DATA_HANDLE pExportData = nullptr;
+    if (EAS_Init(&pExportData) != EAS_SUCCESS) {
+        fclose(fpIn);
+        fclose(fpOut);
+        env->ReleaseStringUTFChars(jMidiPath, midiPath);
+        return;
+    }
+
+    const S_EAS_LIB_CONFIG *pConfig = EAS_Config();
+
+    // Default reverb for the export instance
+    EAS_SetParameter(pExportData, EAS_MODULE_REVERB, EAS_PARAM_REVERB_PRESET, EAS_PARAM_REVERB_CHAMBER);
+    EAS_SetParameter(pExportData, EAS_MODULE_REVERB, EAS_PARAM_REVERB_BYPASS, EAS_FALSE);
+
+    EAS_HANDLE stream;
+    if (EAS_OpenFile(pExportData, &easFile, &stream) != EAS_SUCCESS) {
+        EAS_Shutdown(pExportData);
+        fclose(fpIn);
+        fclose(fpOut);
+        env->ReleaseStringUTFChars(jMidiPath, midiPath);
+        return;
+    }
+
+    EAS_Prepare(pExportData, stream);
+
+    EAS_I32 playLength = 0;
+    EAS_ParseMetaData(pExportData, stream, &playLength);
+
+    EAS_STATE state;
+    EAS_State(pExportData, stream, &state);
+
+    EAS_I32 count = 0;
+    int bufferSizeInShorts = pConfig->mixBufferSize * pConfig->numChannels;
+    int16_t* buffer = new int16_t[bufferSizeInShorts];
+    uint32_t totalDataBytes = 0;
+
+    jclass cls = env->GetObjectClass(thiz);
+    jmethodID onProgressId = env->GetMethodID(cls, "onProgress", "(I)V");
+
+    long lastTimeMs = 0;
+    long currentTimeMs = 0;
+
+    while (state != EAS_STATE_STOPPED && state != EAS_STATE_ERROR) {
+        EAS_Render(pExportData, buffer, pConfig->mixBufferSize, &count);
+        if (count > 0) {
+            size_t bytesToWrite = count * pConfig->numChannels * sizeof(int16_t);
+            fwrite(buffer, 1, bytesToWrite, fpOut);
+            totalDataBytes += bytesToWrite;
+
+            currentTimeMs += (count * 1000) / pConfig->sampleRate;
+            if (currentTimeMs - lastTimeMs >= 100) {
+                int pct = (playLength > 0) ? (currentTimeMs * 100) / playLength : 0;
+                if (pct > 100) pct = 100;
+                env->CallVoidMethod(thiz, onProgressId, pct);
+                lastTimeMs = currentTimeMs;
+            }
+        }
+        EAS_State(pExportData, stream, &state);
+    }
+
+    if (playLength > 0) {
+        env->CallVoidMethod(thiz, onProgressId, 100);
+    }
+
+    // Rewrite WAV header with actual data size
+    writeWavHeader(fpOut, totalDataBytes);
+
+    delete[] buffer;
+    EAS_CloseFile(pExportData, stream);
+    EAS_Shutdown(pExportData);
+    
+    fclose(fpIn);
+    fclose(fpOut); // also safely closes the native file descriptor
+    env->ReleaseStringUTFChars(jMidiPath, midiPath);
 }
 
 // set EAS master volume

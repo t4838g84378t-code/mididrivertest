@@ -23,12 +23,17 @@
 package org.billthefarmer.miditest;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.media.MediaPlayer;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.ParcelFileDescriptor;
 import android.widget.CompoundButton;
 import android.view.MotionEvent;
 import android.view.View;
+import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.billthefarmer.mididriver.MidiDriver;
 import org.billthefarmer.mididriver.MidiConstants;
@@ -43,8 +48,11 @@ public class MainActivity extends Activity
                MidiDriver.OnMidiStartListener
 {
     private TextView text;
+    private ProgressBar exportProgress;
 
     protected MidiDriver midi;
+    
+    private static final int REQUEST_CODE_CREATE_WAV = 1001;
     protected MediaPlayer player;
 
     // On create
@@ -73,6 +81,12 @@ public class MainActivity extends Activity
         v = findViewById(R.id.nants);
         if (v != null)
             v.setOnClickListener(this);
+
+        v = findViewById(R.id.export_wav);
+        if (v != null)
+            v.setOnClickListener(this);
+
+        exportProgress = findViewById(R.id.export_progress);
 
         v = findViewById(R.id.reverb);
         if (v != null)
@@ -190,7 +204,87 @@ public class MainActivity extends Activity
             if (player != null)
                 player.stop();
             break;
+
+        case R.id.export_wav:
+            startWavExport();
+            break;
         }
+    }
+
+    private void startWavExport()
+    {
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("audio/wav");
+        intent.putExtra(Intent.EXTRA_TITLE, "export.wav");
+        startActivityForResult(intent, REQUEST_CODE_CREATE_WAV);
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_CODE_CREATE_WAV && resultCode == Activity.RESULT_OK) {
+            if (data != null && data.getData() != null) {
+                Uri uri = data.getData();
+                performExport(uri);
+            }
+        }
+    }
+
+    private void performExport(final Uri uri) {
+        if (exportProgress != null) {
+            exportProgress.setVisibility(View.VISIBLE);
+            exportProgress.setProgress(0);
+        }
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    // Extract the raw resource to a temporary MIDI file for C++ to open
+                    java.io.File tempMidi = new java.io.File(getCacheDir(), "temp.mid");
+                    java.io.InputStream is = getResources().openRawResource(R.raw.ants);
+                    java.io.FileOutputStream fos = new java.io.FileOutputStream(tempMidi);
+                    byte[] buffer = new byte[1024];
+                    int read;
+                    while ((read = is.read(buffer)) != -1) {
+                        fos.write(buffer, 0, read);
+                    }
+                    fos.close();
+                    is.close();
+
+                    ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "w");
+                    if (pfd != null) {
+                        midi.exportToWav(tempMidi.getAbsolutePath(), pfd, new MidiDriver.OnExportProgressListener() {
+                            @Override
+                            public void onProgress(final int progress) {
+                                runOnUiThread(new Runnable() {
+                                    @Override
+                                    public void run() {
+                                        if (exportProgress != null) {
+                                            exportProgress.setProgress(progress);
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                        pfd.close();
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (exportProgress != null) {
+                            exportProgress.setVisibility(View.GONE);
+                        }
+                        Toast.makeText(MainActivity.this, "Export complete!", Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        }).start();
     }
 
     // onCheckedChanged
