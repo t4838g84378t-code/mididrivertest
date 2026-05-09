@@ -85,23 +85,7 @@
             android:layout_height="wrap_content"
             android:text="@string/nants" />
 
-        <Button
-            android:id="@+id/export_wav"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginLeft="4dp"
-            android:text="@string/export_wav" />
-
     </LinearLayout>
-
-    <ProgressBar
-        android:id="@+id/export_progress"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:max="100"
-        android:visibility="gone" />
 
     <LinearLayout
         android:layout_width="match_parent"

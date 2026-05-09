@@ -115,35 +115,6 @@ public class MidiDriver
         void onMidiStart();
     }
 
-    /**
-     * Export progress listener interface
-     */
-    public interface OnExportProgressListener
-    {
-        void onProgress(int progress);
-    }
-
-    private OnExportProgressListener exportListener;
-
-    /**
-     * Called from JNI during WAV export
-     */
-    protected void onProgress(int progress)
-    {
-        if (exportListener != null) {
-            exportListener.onProgress(progress);
-        }
-    }
-
-    /**
-     * Export a MIDI file to WAV
-     */
-    public void exportToWav(String midiPath, android.os.ParcelFileDescriptor outPfd, OnExportProgressListener listener)
-    {
-        exportListener = listener;
-        nativeExportWav(midiPath, outPfd.getFd());
-    }
-
     // Native midi methods
 
     /**
@@ -198,11 +169,6 @@ public class MidiDriver
      * @param byte array of DLS file data
      */
     public native boolean loadDLS(byte a[]);
-
-    /**
-     * Native export WAV logic
-     */
-    private native void nativeExportWav(String midiPath, int fd);
 
     // Load midi library
     static
